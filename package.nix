@@ -64,11 +64,12 @@ stdenv.mkDerivation (finalAttrs: {
 
     $out/bin/dsh --profile web --dump-default-config >/dev/null
 
-    node --input-type=commonjs -e '
-      const { createRequire } = require("node:module");
-      const load = createRequire(process.argv[1]);
-      for (const addon of ["node-pty", "sharp", "node-addon-require-builtin"]) load(addon);
-    ' $out/lib/deepseek-harness/node_modules/@deepseek-ai/dsh/package.json
+    for addon in node-pty sharp node-addon-require-builtin; do
+      echo "installCheck: loading $addon"
+      node --input-type=commonjs \
+        -e 'require("node:module").createRequire(process.argv[2])(process.argv[1])' \
+        "$addon" $out/lib/deepseek-harness/node_modules/@deepseek-ai/dsh/package.json
+    done
 
     runHook postInstallCheck
   '';
