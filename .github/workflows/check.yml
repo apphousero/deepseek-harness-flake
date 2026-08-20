@@ -68,6 +68,22 @@ jobs:
             fi
           fi
 
+      - name: diagnose sharp on x86_64 (temporary)
+        if: matrix.system == 'x86_64-linux'
+        continue-on-error: true
+        run: |
+          grep -o 'avx512[a-z]*' /proc/cpuinfo | sort -u | tr '\n' ' '; echo
+          mkdir -p /tmp/sharptest && cd /tmp/sharptest && npm init -y >/dev/null
+          npm i --ignore-scripts --no-audit --no-fund sharp@0.35.3 >/dev/null
+          node -e 'const s=require("sharp");console.log("ubuntu-glibc sharp OK",JSON.stringify(s.versions))'
+          echo "ubuntu-glibc exit=$?"
+          cd "$GITHUB_WORKSPACE"
+          out=$(nix build --impure --no-link --print-out-paths --expr 'let f = builtins.getFlake (toString ./.); in f.packages.x86_64-linux.deepseek-harness.overrideAttrs { doInstallCheck = false; }')
+          echo "store output: $out"
+          anchor="$out/lib/deepseek-harness/node_modules/@deepseek-ai/dsh/package.json"
+          nix shell nixpkgs#gdb nixpkgs#nodejs --command gdb -batch -ex run -ex 'bt 25' -ex 'info sharedlibrary' \
+            --args node -e 'require("node:module").createRequire(process.argv[1])("sharp")' "$anchor" 2>&1 | tail -60
+
       - name: flake check
         run: nix flake check -L
 
