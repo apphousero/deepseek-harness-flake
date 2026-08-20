@@ -1,0 +1,75 @@
+name: check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: Apply this version bump before checking
+        type: string
+        required: false
+        default: ""
+      digest:
+        description: sha256 the bumped package.nix and pnpm lock must hash to
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.workflow }}-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.system }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+          - system: aarch64-darwin
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: assert runner system
+        env:
+          EXPECTED: ${{ matrix.system }}
+        run: |
+          actual=$(nix eval --raw --impure --expr builtins.currentSystem)
+          if [ "$actual" != "$EXPECTED" ]; then
+            echo "runner reports $actual, matrix claims $EXPECTED" >&2
+            exit 1
+          fi
+
+      - name: apply pending bump
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          nix run .#update -- "$VERSION"
+          if [ -n "$DIGEST" ]; then
+            actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml | sha256sum | cut -d' ' -f1)
+            if [ "$actual" != "$DIGEST" ]; then
+              echo "the bump hashes to $actual, run resolved $DIGEST; upstream packages moved mid-run" >&2
+              exit 1
+            fi
+          fi
+
+      - name: flake check
+        run: nix flake check -L
+
+      - name: run the built binary
+        run: nix run .#deepseek-harness -- --version

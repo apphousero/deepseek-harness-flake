@@ -1,0 +1,89 @@
+name: update
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: npm version to pin (defaults to the latest dist-tag)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.bump.outputs.changed }}
+      version: ${{ steps.bump.outputs.version }}
+      digest: ${{ steps.bump.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: rewrite package.nix and the pnpm lock
+        id: bump
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          nix run .#update -- "$VERSION"
+          echo "version=$(sed -n 's/^  version = "\(.*\)";$/\1/p' package.nix)" >>"$GITHUB_OUTPUT"
+          echo "digest=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml | sha256sum | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+          if git diff --quiet -- package.nix npm; then
+            echo "changed=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >>"$GITHUB_OUTPUT"
+          fi
+
+  verify:
+    needs: resolve
+    if: needs.resolve.outputs.changed == 'true'
+    uses: ./.github/workflows/check.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+      digest: ${{ needs.resolve.outputs.digest }}
+
+  pull-request:
+    needs: [resolve, verify]
+    if: needs.resolve.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: rewrite package.nix and the pnpm lock
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          DIGEST: ${{ needs.resolve.outputs.digest }}
+        run: |
+          nix run .#update -- "$VERSION"
+          actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml | sha256sum | cut -d' ' -f1)
+          if [ "$actual" != "$DIGEST" ]; then
+            echo "the bump hashes to $actual, run resolved $DIGEST; upstream packages moved mid-run" >&2
+            exit 1
+          fi
+
+      - uses: peter-evans/create-pull-request@v8
+        with:
+          branch: update/deepseek-harness
+          add-paths: |
+            package.nix
+            npm/package.json
+            npm/pnpm-lock.yaml
+          title: "deepseek-harness: ${{ needs.resolve.outputs.version }}"
+          commit-message: "deepseek-harness: ${{ needs.resolve.outputs.version }}"
+          delete-branch: true
+          body: |
+            Pins [`@deepseek-ai/dsh@${{ needs.resolve.outputs.version }}`](https://www.npmjs.com/package/@deepseek-ai/dsh/v/${{ needs.resolve.outputs.version }})
+            with a regenerated pnpm lock and pnpm store hash.
+
+            The `check` matrix already ran against this exact content on every supported system in
+            [run ${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+            Pull requests opened with `GITHUB_TOKEN` cannot trigger workflows, so this PR will
+            show no checks of its own.

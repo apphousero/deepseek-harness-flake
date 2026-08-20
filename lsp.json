@@ -1,0 +1,34 @@
+{
+  "nil": {
+    "settings": {
+      "nil": {
+        "formatting": {
+          "command": ["nixfmt"]
+        },
+        "diagnostics": {
+          "ignored": ["unused_binding", "unused_with"]
+        },
+        "nix": {
+          "binary": "nix",
+          "maxMemoryMB": 2560,
+          "flake": {
+            "autoEvalInputs": false,
+            "nixpkgsInputName": "nixpkgs"
+          }
+        }
+      }
+    }
+  },
+  "yamlls": {
+    "settings": {
+      "yaml": {
+        "schemas": {
+          "https://json.schemastore.org/github-workflow": ".github/workflows/*"
+        },
+        "schemaStore": {
+          "enable": true
+        }
+      }
+    }
+  }
+}
