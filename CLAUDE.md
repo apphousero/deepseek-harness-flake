@@ -58,9 +58,21 @@ wants `libc.musl-<arch>.so.1`, which no glibc stdenv can satisfy. Without the de
 the build. Do not "fix" this with `autoPatchelfIgnoreMissingDeps` — that keeps an unloadable `.node` in the
 closure and hides the next real missing library.
 
+`patchelfUnstable` (0.18) is in `nativeBuildInputs` on Linux, and it is not a style preference. nixpkgs' default
+`patchelf` is 0.15.2, and the RUNPATH `autoPatchelfHook` writes is far longer than the `$ORIGIN/` the prebuilts
+ship, so `.dynstr` has to grow. On the `x86_64` `libvips-cpp.so.8.18.3` — built with `-z separate-code`, so
+`.init`/`.plt` sit in an executable `LOAD` that ends at `.fini` — 0.15.2 relocates `.dynstr` and drags
+`.init`/`.plt` into a **new `RW` segment**, leaves `DT_INIT` pointing at the clobbered old offset, and the library
+then segfaults in `call_init` the moment `node` `dlopen`s it. `aarch64` escapes it only because that prebuilt has
+`.init`/`.plt`/`.text` in one segment 0.15.2 leaves alone, which is why the failure looked architecture-specific.
+`patchelf` resolves from `PATH`, and `nativeBuildInputs` shadows the stdenv default, so both `auto-patchelf` and
+the fixup `--shrink-rpath` pass use 0.18. Verify with
+`readelf -lW .../libvips-cpp.so.8.18.3` — `.init` and `.plt` must stay in the `R E` segment.
+
 The `installCheck` loads `node-pty`, `sharp`, and `node-addon-require-builtin` through a `createRequire` anchored
-at the installed `@deepseek-ai/dsh/package.json`. That is the only check that proves patchelf did its job; a
-missing library otherwise surfaces at runtime, in a plugin, on a user's machine.
+at the installed `@deepseek-ai/dsh/package.json`, then runs one `sharp` encode. The load proves patchelf produced
+a library whose initializers run; the encode proves `.text`/`.plt` are executable, which a load alone does not.
+A missing or mispatched library otherwise surfaces at runtime, in a plugin, on a user's machine.
 
 ## Runtime model
 
@@ -73,8 +85,21 @@ missing library otherwise surfaces at runtime, in a plugin, on a user's machine.
   makes `dsh` throw, by design.
 - `~/.dsh/cordis.patch.yml` is the home-level user patch layer, which is what the Home Manager module writes.
 
-The wrapper only appends `pnpm` to `PATH`: `dsh plugin` is a pnpm forwarder that installs out-of-tree plugins into
-the profile directory. `git` is deliberately not in the closure — git-hosted plugin specs use the user's git.
+The wrapper passes `node --expose-internals` and appends `pnpm` to `PATH`. Neither is optional. `runProfile`
+unconditionally mounts `@deepseek-ai/cordis-plugin-hmr` to watch the two user patch files, `cordis-plugin-loader`
+only exposes its internal ESM loader when `process.execArgv` contains `--expose-internals` (`NODE_OPTIONS` does
+not land in `execArgv`, so it cannot substitute), and `cordis-plugin-hmr`'s constructor throws without it. The
+throw is fatal — `suppressShutdownError` rethrows for a live loader — so without the flag every real boot dies
+right after the profile mounts, while `--version` and `--dump-default-config` still pass. Upstream's shebang is a
+bare `#!/usr/bin/env node`; the flag is ours to add. `dsh plugin` is a pnpm forwarder that installs out-of-tree
+plugins into the profile directory. `git` is deliberately not in the closure — git-hosted plugin specs use the
+user's git.
+
+The `installCheck` therefore also boots the web profile (`dsh web --no-open --port 0`), waits for its
+`dsh web: http://…` line, and asserts the process is still alive a few seconds later. Nothing cheaper catches a
+profile that mounts and then dies: `--dump-default-config` never boots, and `--profile web --help` prints the web
+app's own help before the loader reaches HMR. It is Linux-only: the probe has to bind a loopback socket, and the
+darwin build sandbox refuses that without `__darwinAllowLocalNetworking`, which nothing here can verify.
 
 ## Updating to a new version
 
@@ -131,8 +156,8 @@ nix run .#deepseek-harness -- web --no-open           # boots the whole plugin t
 ```
 
 `nix flake check` is meaningful here only because `checks.<system>.package` aliases the real derivation. A wrong
-store hash fails at fetch time; a stale `version` fails the `installCheck` assertion; an unpatched native addon
-fails the addon-load probe.
+store hash fails at fetch time; a stale `version` fails the `installCheck` assertion; an unpatched or mispatched
+native addon fails the addon probe; a profile that mounts and then dies fails the Linux web-boot probe.
 
 `nix flake check` covers the host system only. `--all-systems` tries to *build* the others and will fail
 off-platform; to check that the other systems still evaluate, use

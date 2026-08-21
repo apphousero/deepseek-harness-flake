@@ -5,6 +5,7 @@
   fetchPnpmDeps,
   makeWrapper,
   nodejs,
+  patchelfUnstable,
   pnpmConfigHook,
   pnpm_11,
 }:
@@ -28,7 +29,10 @@ stdenv.mkDerivation (finalAttrs: {
     pnpm_11
     pnpmConfigHook
   ]
-  ++ lib.optionals stdenv.hostPlatform.isLinux [ autoPatchelfHook ];
+  ++ lib.optionals stdenv.hostPlatform.isLinux [
+    autoPatchelfHook
+    patchelfUnstable
+  ];
 
   buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ stdenv.cc.cc.lib ];
 
@@ -40,8 +44,11 @@ stdenv.mkDerivation (finalAttrs: {
     mkdir -p $out/lib/deepseek-harness
     cp -r node_modules $out/lib/deepseek-harness/node_modules
     rm -rf $out/lib/deepseek-harness/node_modules/@koromix/koffi-*/musl_*
+    rm -f $out/lib/deepseek-harness/node_modules/.modules.yaml \
+      $out/lib/deepseek-harness/node_modules/.pnpm-workspace-state-v1.json
 
     makeWrapper ${lib.getExe nodejs} $out/bin/dsh \
+      --add-flags --expose-internals \
       --add-flags $out/lib/deepseek-harness/node_modules/@deepseek-ai/dsh/lib/bin.js \
       --suffix PATH : ${lib.makeBinPath [ pnpm_11 ]}
 
@@ -68,7 +75,28 @@ stdenv.mkDerivation (finalAttrs: {
       const { createRequire } = require("node:module");
       const load = createRequire(process.argv[1]);
       for (const addon of ["node-pty", "sharp", "node-addon-require-builtin"]) load(addon);
+      load("sharp")({ create: { width: 8, height: 8, channels: 3, background: "red" } })
+        .png()
+        .toBuffer()
+        .then(() => process.exit(0), (e) => { console.error(e); process.exit(1); });
     ' $out/lib/deepseek-harness/node_modules/@deepseek-ai/dsh/package.json
+
+    ${lib.optionalString stdenv.hostPlatform.isLinux ''
+      $out/bin/dsh web --no-open --port 0 >"$TMPDIR/web.log" 2>&1 &
+      webPid=$!
+      for _ in $(seq 1 30); do
+        grep -q '^dsh web: http://' "$TMPDIR/web.log" && break
+        sleep 1
+      done
+      sleep 2
+      if ! kill -0 "$webPid" 2>/dev/null || ! grep -q '^dsh web: http://' "$TMPDIR/web.log"; then
+        echo "web profile failed to boot:" >&2
+        cat "$TMPDIR/web.log" >&2
+        exit 1
+      fi
+      kill "$webPid"
+      wait "$webPid" || true
+    ''}
 
     runHook postInstallCheck
   '';
