@@ -123,9 +123,12 @@ need it installed. In-box plugins always resolve from the store closure, never f
 the pnpm store hash:
 
 ```console
-$ nix run .#update              # the latest npm dist-tag
-$ nix run .#update -- 0.1.0-rc.7 # a specific version
+$ nix run .#update                    # the newest published release
+$ nix run .#update -- dsh-v0.1.2-rc.1 # a specific version; a `dsh-v` tag prefix is fine
 ```
+
+With no argument it takes the newest upstream release — prereleases included, since upstream publishes nothing
+else — and pins the version off its `dsh-v*` tag. npm `dist-tags` are ignored: `latest` trails by weeks.
 
 It is idempotent: an already-current tree keeps its hash and refetches nothing. A version or lock change fetches
 the pnpm store once to resolve the new hash.
