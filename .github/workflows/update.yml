@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: npm version to pin (defaults to the latest dist-tag)
+        description: npm version to pin (defaults to the newest published release)
         type: string
         required: false
 
@@ -28,14 +28,18 @@ jobs:
         id: bump
         env:
           VERSION: ${{ inputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           nix run .#update -- "$VERSION"
-          echo "version=$(sed -n 's/^  version = "\(.*\)";$/\1/p' package.nix)" >>"$GITHUB_OUTPUT"
-          echo "digest=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml | sha256sum | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
+          version=$(sed -n 's/^  version = "\(.*\)";$/\1/p' package.nix)
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "digest=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml npm/pnpm-workspace.yaml | sha256sum | cut -d' ' -f1)" >>"$GITHUB_OUTPUT"
           if git diff --quiet -- package.nix npm; then
             echo "changed=false" >>"$GITHUB_OUTPUT"
+            echo "Already pinned to \`$version\`, the newest published release: nothing to bump, so \`verify\` and \`pull-request\` are skipped." >>"$GITHUB_STEP_SUMMARY"
           else
             echo "changed=true" >>"$GITHUB_OUTPUT"
+            echo "Bumping to \`$version\`; \`verify\` builds it on every supported system before \`pull-request\` opens the PR." >>"$GITHUB_STEP_SUMMARY"
           fi
 
   verify:
@@ -61,9 +65,10 @@ jobs:
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           DIGEST: ${{ needs.resolve.outputs.digest }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           nix run .#update -- "$VERSION"
-          actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml | sha256sum | cut -d' ' -f1)
+          actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml npm/pnpm-workspace.yaml | sha256sum | cut -d' ' -f1)
           if [ "$actual" != "$DIGEST" ]; then
             echo "the bump hashes to $actual, run resolved $DIGEST; upstream packages moved mid-run" >&2
             exit 1
@@ -76,6 +81,7 @@ jobs:
             package.nix
             npm/package.json
             npm/pnpm-lock.yaml
+            npm/pnpm-workspace.yaml
           title: "deepseek-harness: ${{ needs.resolve.outputs.version }}"
           commit-message: "deepseek-harness: ${{ needs.resolve.outputs.version }}"
           delete-branch: true

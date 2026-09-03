@@ -13,7 +13,7 @@ on:
         required: false
         default: ""
       digest:
-        description: sha256 the bumped package.nix and pnpm lock must hash to
+        description: sha256 the bumped package.nix and install root must hash to
         type: string
         required: false
         default: ""
@@ -61,7 +61,7 @@ jobs:
         run: |
           nix run .#update -- "$VERSION"
           if [ -n "$DIGEST" ]; then
-            actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml | sha256sum | cut -d' ' -f1)
+            actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml npm/pnpm-workspace.yaml | sha256sum | cut -d' ' -f1)
             if [ "$actual" != "$DIGEST" ]; then
               echo "the bump hashes to $actual, run resolved $DIGEST; upstream packages moved mid-run" >&2
               exit 1

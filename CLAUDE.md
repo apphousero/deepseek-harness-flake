@@ -10,7 +10,7 @@ at deepseek.com/harness has no packaging-relevant detail.
 | File | Purpose |
 | --- | --- |
 | `package.nix` | The derivation. Version and the pnpm store hash live here. |
-| `npm/` | The install root: `package.json` pinning one exact `@deepseek-ai/dsh` version, `pnpm-lock.yaml`, and `pnpm-workspace.yaml` (`nodeLinker: hoisted`). |
+| `npm/` | The install root: `package.json` pinning one exact `@deepseek-ai/dsh` version, `pnpm-lock.yaml`, and `pnpm-workspace.yaml` (`nodeLinker: hoisted`, `minimumReleaseAge: 0`). |
 | `flake.nix` | Outputs: `packages`, `checks`, `formatter`, `apps.update`, `devShells`, `overlays.default`, `homeManagerModules.default`. |
 | `module.nix` | Home Manager module: `programs.deepseek-harness.{enable,package,patches}`. |
 | `tests/module.nix` | Evaluates `module.nix` against a stub Home Manager and asserts the rendered `cordis.patch.yml`. |
@@ -26,7 +26,7 @@ module would only wrap `environment.systemPackages`. The overlay is the NixOS pa
 
 Each of these was reproduced before the decision:
 
-1. **No release assets.** `deepseek-ai/deepseek-harness` publishes tags (`dsh-v0.1.0-rc.8`) with zero binary
+1. **No release assets.** `deepseek-ai/deepseek-harness` publishes tags (`dsh-v0.1.2-rc.1`) with zero binary
    assets. There is no `SHA256SUMS.txt` and nothing to hash-pin except npm tarballs.
 2. **npm cannot resolve this graph.** `npm install --package-lock-only` on `@deepseek-ai/dsh` ran 20 minutes at
    100% CPU and 3.4 GB RSS without producing a lockfile — the ~500-package graph with dense peer dependencies is
@@ -45,6 +45,11 @@ Consequences worth preserving:
   changes the hash; 1 and 2 are deprecated and slated for removal.
 - `fetchPnpmDeps` fetches with `--force`, so the store holds every platform's optional packages and **one hash
   covers all three systems**. Do not add per-system hashes.
+- `minimumReleaseAge: 0` in `npm/pnpm-workspace.yaml` is load-bearing. pnpm 11 applies a publish cooldown by
+  default, and when the pinned version is younger than it, `pnpm install` *rewrites the workspace file* with a
+  `minimumReleaseAgeExclude` entry per freshly published package — 215 lines for one bump. That file is part of
+  `src`, so an unnoticed rewrite is store-hash drift between whatever CI verified and whatever landed. The
+  cooldown buys nothing here anyway: the version is chosen deliberately and the check matrix gates it.
 
 ## Native code in a "JavaScript" package
 
@@ -104,8 +109,8 @@ darwin build sandbox refuses that without `__darwinAllowLocalNetworking`, which 
 ## Updating to a new version
 
 ```sh
-nix run .#update              # the latest npm dist-tag
-nix run .#update -- 0.1.0-rc.7 # a specific version
+nix run .#update                    # the newest published release
+nix run .#update -- dsh-v0.1.2-rc.1 # a specific version, tag name or bare
 ```
 
 The script rewrites `npm/package.json`, regenerates `npm/pnpm-lock.yaml`, rewrites `version` in `package.nix`, and
@@ -117,8 +122,21 @@ Two accounting rules keep a silent no-op from looking like a bump: the awk pass 
 one `version` line and exactly one `hash` line, and the script fails if the regenerated lock has no
 `'@deepseek-ai/dsh@<version>':` entry (an unpublished or mistyped version).
 
-Upstream publishes prereleases only, and `dist-tags.latest` currently trails `next` (rc.7 vs rc.8). The script
-follows `latest` on purpose; pass a version explicitly to track `next`.
+With no argument the script takes the newest non-draft entry of
+`api.github.com/repos/deepseek-ai/deepseek-harness/releases`, by `published_at`, and strips the `dsh-v` prefix off
+its tag. **Prereleases count**, which is the whole point: every upstream release is one, so `releases/latest` —
+what `oh-my-pi-flake` uses — answers `404` here. Server ordering is not trusted; `max_by(.published_at)` is
+explicit. An argument may be a bare version or a tag name pasted from the tags page.
+
+npm `dist-tags` are deliberately not consulted. `latest` trails `next` by weeks (it sat on `0.1.1-rc.2` while
+`0.1.2-rc.1` was released), so following it stalls the repo silently.
+
+The tag decides the version, but npm still has to serve it: the lock check below fails the run if the release's
+tarball is not published yet. That window is minutes wide — upstream tags and publishes from one release job — and
+a red run beats a pin nothing can build.
+
+`GITHUB_TOKEN` is used for the API call when set, and both `update.yml` jobs pass `github.token`. Unauthenticated
+works locally; on shared runner IPs the 60 requests/hour limit does not.
 
 ### CI
 
@@ -140,11 +158,11 @@ shows no checks of its own; the verification has to happen in the update run, be
 consequences: the repo setting *Allow GitHub Actions to create and approve pull requests* must stay enabled, and
 scheduled runs only fire from the default branch.
 
-The digest is `sha256sum package.nix npm/package.json npm/pnpm-lock.yaml | sha256sum` — three files, because a
-bump moves all three. Re-deriving beats passing an artifact around, but only the digest makes that assumption
-enforced: caret ranges in the transitive graph resolve against live registry state, so a dependency published
-mid-run changes the lock, diverges from the digest, and fails the run instead of quietly landing a PR nothing
-verified.
+The digest is `sha256sum package.nix npm/package.json npm/pnpm-lock.yaml npm/pnpm-workspace.yaml | sha256sum` —
+`package.nix` plus every file of the install root that feeds `src`, because a bump can move all four. Re-deriving
+beats passing an artifact around, but only the digest makes that assumption enforced: caret ranges in the
+transitive graph resolve against live registry state, so a dependency published mid-run changes the lock, diverges
+from the digest, and fails the run instead of quietly landing a PR nothing verified.
 
 ### Verifying a bump
 
@@ -167,7 +185,7 @@ off-platform; to check that the other systems still evaluate, use
 
 - **`installCheck` needs a writable `HOME`.** `dsh --dump-default-config` initializes `~/.dsh/profiles/web` and
   the module fallback directory before it can compose a tree. Keep `export HOME=$(mktemp -d)`.
-- **`dsh --version` prints a bare version** (`0.1.0-rc.8`), not `dsh/<version>`. The assertion compares exactly.
+- **`dsh --version` prints a bare version** (`0.1.2-rc.1`), not `dsh/<version>`. The assertion compares exactly.
 - **Untracked files are invisible to `nix flake check` and to `update.sh`.** The flake source is the git tree, so
   a new file must be `git add`-ed before `checks` or a `pnpmDeps` fetch can see it.
 - **`programs.deepseek-harness.patches` is a YAML *list*, not a mapping.** The option type is
