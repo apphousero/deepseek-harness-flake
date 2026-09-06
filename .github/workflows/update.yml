@@ -28,7 +28,6 @@ jobs:
         id: bump
         env:
           VERSION: ${{ inputs.version }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           nix run .#update -- "$VERSION"
           version=$(sed -n 's/^  version = "\(.*\)";$/\1/p' package.nix)
@@ -39,7 +38,7 @@ jobs:
             echo "Already pinned to \`$version\`, the newest published release: nothing to bump, so \`verify\` and \`pull-request\` are skipped." >>"$GITHUB_STEP_SUMMARY"
           else
             echo "changed=true" >>"$GITHUB_OUTPUT"
-            echo "Bumping to \`$version\`; \`verify\` builds it on every supported system before \`pull-request\` opens the PR." >>"$GITHUB_STEP_SUMMARY"
+            echo "Bumping to \`$version\`; \`verify\` builds it on x86_64-linux and aarch64-linux before \`pull-request\` opens the PR." >>"$GITHUB_STEP_SUMMARY"
           fi
 
   verify:
@@ -65,7 +64,6 @@ jobs:
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           DIGEST: ${{ needs.resolve.outputs.digest }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           nix run .#update -- "$VERSION"
           actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml npm/pnpm-workspace.yaml | sha256sum | cut -d' ' -f1)
@@ -89,7 +87,8 @@ jobs:
             Pins [`@deepseek-ai/dsh@${{ needs.resolve.outputs.version }}`](https://www.npmjs.com/package/@deepseek-ai/dsh/v/${{ needs.resolve.outputs.version }})
             with a regenerated pnpm lock and pnpm store hash.
 
-            The `check` matrix already ran against this exact content on every supported system in
+            The `check` matrix already ran against this exact content on `x86_64-linux` and
+            `aarch64-linux` in
             [run ${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
             Pull requests opened with `GITHUB_TOKEN` cannot trigger workflows, so this PR will
             show no checks of its own.

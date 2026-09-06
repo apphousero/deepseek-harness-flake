@@ -122,32 +122,47 @@ Two accounting rules keep a silent no-op from looking like a bump: the awk pass 
 one `version` line and exactly one `hash` line, and the script fails if the regenerated lock has no
 `'@deepseek-ai/dsh@<version>':` entry (an unpublished or mistyped version).
 
-With no argument the script takes the newest non-draft entry of
-`api.github.com/repos/deepseek-ai/deepseek-harness/releases`, by `published_at`, and strips the `dsh-v` prefix off
-its tag. **Prereleases count**, which is the whole point: every upstream release is one, so `releases/latest` —
-what `oh-my-pi-flake` uses — answers `404` here. Server ordering is not trusted; `max_by(.published_at)` is
-explicit. An argument may be a bare version or a tag name pasted from the tags page.
+With no argument the script takes the newest version the **npm registry** serves: it reads the full packument at
+`registry.npmjs.org/@deepseek-ai/dsh` and picks the `.versions` key with the newest `.time` entry. An argument may
+be a bare version or a tag name pasted from the tags page — `dsh-v` and `v` prefixes are stripped.
 
-npm `dist-tags` are deliberately not consulted. `latest` trails `next` by weeks (it sat on `0.1.1-rc.2` while
-`0.1.2-rc.1` was released), so following it stalls the repo silently.
+GitHub releases are deliberately **not** the source of truth, and neither are npm `dist-tags`. Each was tried and
+each broke:
 
-The tag decides the version, but npm still has to serve it: the lock check below fails the run if the release's
-tarball is not published yet. That window is minutes wide — upstream tags and publishes from one release job — and
-a red run beats a pin nothing can build.
+- `releases/latest` answers `404` — every upstream release is a prerelease.
+- `dist-tags` stall the repo silently. `latest` trailed `next` by weeks (it sat on `0.1.1-rc.2` while
+  `0.1.2-rc.1` was released), so following it pins nothing new and reports success.
+- `max_by(.published_at)` over `releases` over-shoots. A GitHub release does not imply an npm publish:
+  `dsh-v0.1.3-alpha.1` (2026-09-04) and `dsh-v0.1.2-alpha.1` (2026-08-27) were tagged and never published, so
+  `pnpm install` died with `ERR_PNPM_NO_MATCHING_VERSION` and *every* scheduled run stayed red until upstream
+  published something newer. That is not a minutes-wide tag/publish window; it is indefinite.
 
-`GITHUB_TOKEN` is used for the API call when set, and both `update.yml` jobs pass `github.token`. Unauthenticated
-works locally; on shared runner IPs the 60 requests/hour limit does not.
+The registry is also the only channel this flake can consume, so asking it removes the whole class of failure:
+what it lists is exactly what `fetchPnpmDeps` can fetch. Ordering by publish time, not by semver, keeps the
+previous semantics — an alpha published after an rc is still the newest pin. The lock check above stays as the
+guard for an explicitly requested version npm does not serve.
+
+No `GITHUB_TOKEN` is needed: the registry needs no auth and has no 60 requests/hour cap. `DSH_REGISTRY` overrides
+the endpoint.
 
 ### CI
 
-`.github/workflows/check.yml` is the only definition of "checked": a per-system matrix running `nix flake check -L`
-and `nix run .#deepseek-harness -- --version`. It is both an ordinary `push`/`pull_request` workflow and a
-`workflow_call` reusable one, taking an optional `version` input that applies a pending bump before checking, and
-an optional `digest` pinning what that bump must produce.
+`.github/workflows/check.yml` is the only definition of "checked": a matrix over `x86_64-linux` and
+`aarch64-linux` running `nix flake check -L` and `nix run .#deepseek-harness -- --version`. It is both an ordinary
+`push`/`pull_request` workflow and a `workflow_call` reusable one, taking an optional `version` input that applies
+a pending bump before checking, and an optional `digest` pinning what that bump must produce.
 
 Each leg first asserts `builtins.currentSystem` equals its `matrix.system`. Without that the matrix is decorative:
 `nix flake check` only ever checks the host, so a runner label that silently changes architecture buys a row of
 green runs covering one system.
+
+`aarch64-darwin` is exported by the flake but **not** in the matrix, and that asymmetry is deliberate. The
+Linux-only parts of the build — `autoPatchelfHook`, `patchelfUnstable`, the addon probe, the web-boot probe — are
+exactly the parts a CI leg would exercise, so a macOS runner verifies little beyond `pnpm install` while adding
+the slowest, flakiest leg of the matrix. Darwin support is therefore evaluation-checked only
+(`nix eval .#packages.aarch64-darwin.deepseek-harness.drvPath`); a build regression there surfaces on a darwin
+host, not in CI. Do not "fix" the gap by re-adding a `macos-*` runner without also making the darwin build assert
+something Linux does not.
 
 `.github/workflows/update.yml` runs daily at 06:00 UTC in three jobs: `resolve` runs `update.sh` and reports
 whether the pin moved, `verify` calls `check.yml` with the new version, and `pull-request` opens or updates
@@ -179,7 +194,8 @@ native addon fails the addon probe; a profile that mounts and then dies fails th
 
 `nix flake check` covers the host system only. `--all-systems` tries to *build* the others and will fail
 off-platform; to check that the other systems still evaluate, use
-`nix eval .#packages.<system>.deepseek-harness.drvPath`.
+`nix eval .#packages.<system>.deepseek-harness.drvPath`. For `aarch64-darwin` that eval is the whole of CI's
+coverage, so run the build itself on a darwin host before claiming a bump works there.
 
 ## Gotchas
 
