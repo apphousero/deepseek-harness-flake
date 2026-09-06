@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Rewrites version, the pnpm lock, and the pnpm store hash for the newest upstream
-# release. Run from the repository root, or via `nix run .#update`.
+# Rewrites version, the pnpm lock, and the pnpm store hash for the newest published
+# npm release. Run from the repository root, or via `nix run .#update`.
 set -euo pipefail
 
-repo="deepseek-ai/deepseek-harness"
+registry="${DSH_REGISTRY:-https://registry.npmjs.org}"
 package="@deepseek-ai/dsh"
 target="${DSH_PACKAGE_NIX:-package.nix}"
 root="${DSH_NPM_ROOT:-npm}"
@@ -16,17 +16,14 @@ fi
 
 trap 'rm -f "$target.tmp" "$root/package.json.tmp"' EXIT
 
-auth=()
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
-fi
-
 version="${1:-}"
 if [ -z "$version" ]; then
-  version=$(curl -fsSL "${auth[@]}" "https://api.github.com/repos/$repo/releases?per_page=20" |
-    jq -r 'map(select(.draft == false))
-           | if length == 0 then error("update: \($repo) publishes no releases") else . end
-           | max_by(.published_at).tag_name' --arg repo "$repo")
+  version=$(curl -fsSL "$registry/$package" |
+    jq -r --arg package "$package" \
+      '.time as $t
+       | (.versions // {} | keys_unsorted)
+       | if length == 0 then error("update: \($package) publishes no versions") else . end
+       | max_by($t[.])')
 fi
 version="${version#dsh-}"
 version="${version#v}"

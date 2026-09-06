@@ -28,7 +28,6 @@ jobs:
         id: bump
         env:
           VERSION: ${{ inputs.version }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           nix run .#update -- "$VERSION"
           version=$(sed -n 's/^  version = "\(.*\)";$/\1/p' package.nix)
@@ -65,7 +64,6 @@ jobs:
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
           DIGEST: ${{ needs.resolve.outputs.digest }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           nix run .#update -- "$VERSION"
           actual=$(sha256sum package.nix npm/package.json npm/pnpm-lock.yaml npm/pnpm-workspace.yaml | sha256sum | cut -d' ' -f1)

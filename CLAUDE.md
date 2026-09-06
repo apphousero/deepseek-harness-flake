@@ -122,21 +122,28 @@ Two accounting rules keep a silent no-op from looking like a bump: the awk pass 
 one `version` line and exactly one `hash` line, and the script fails if the regenerated lock has no
 `'@deepseek-ai/dsh@<version>':` entry (an unpublished or mistyped version).
 
-With no argument the script takes the newest non-draft entry of
-`api.github.com/repos/deepseek-ai/deepseek-harness/releases`, by `published_at`, and strips the `dsh-v` prefix off
-its tag. **Prereleases count**, which is the whole point: every upstream release is one, so `releases/latest` —
-what `oh-my-pi-flake` uses — answers `404` here. Server ordering is not trusted; `max_by(.published_at)` is
-explicit. An argument may be a bare version or a tag name pasted from the tags page.
+With no argument the script takes the newest version the **npm registry** serves: it reads the full packument at
+`registry.npmjs.org/@deepseek-ai/dsh` and picks the `.versions` key with the newest `.time` entry. An argument may
+be a bare version or a tag name pasted from the tags page — `dsh-v` and `v` prefixes are stripped.
 
-npm `dist-tags` are deliberately not consulted. `latest` trails `next` by weeks (it sat on `0.1.1-rc.2` while
-`0.1.2-rc.1` was released), so following it stalls the repo silently.
+GitHub releases are deliberately **not** the source of truth, and neither are npm `dist-tags`. Each was tried and
+each broke:
 
-The tag decides the version, but npm still has to serve it: the lock check below fails the run if the release's
-tarball is not published yet. That window is minutes wide — upstream tags and publishes from one release job — and
-a red run beats a pin nothing can build.
+- `releases/latest` answers `404` — every upstream release is a prerelease.
+- `dist-tags` stall the repo silently. `latest` trailed `next` by weeks (it sat on `0.1.1-rc.2` while
+  `0.1.2-rc.1` was released), so following it pins nothing new and reports success.
+- `max_by(.published_at)` over `releases` over-shoots. A GitHub release does not imply an npm publish:
+  `dsh-v0.1.3-alpha.1` (2026-09-04) and `dsh-v0.1.2-alpha.1` (2026-08-27) were tagged and never published, so
+  `pnpm install` died with `ERR_PNPM_NO_MATCHING_VERSION` and *every* scheduled run stayed red until upstream
+  published something newer. That is not a minutes-wide tag/publish window; it is indefinite.
 
-`GITHUB_TOKEN` is used for the API call when set, and both `update.yml` jobs pass `github.token`. Unauthenticated
-works locally; on shared runner IPs the 60 requests/hour limit does not.
+The registry is also the only channel this flake can consume, so asking it removes the whole class of failure:
+what it lists is exactly what `fetchPnpmDeps` can fetch. Ordering by publish time, not by semver, keeps the
+previous semantics — an alpha published after an rc is still the newest pin. The lock check above stays as the
+guard for an explicitly requested version npm does not serve.
+
+No `GITHUB_TOKEN` is needed: the registry needs no auth and has no 60 requests/hour cap. `DSH_REGISTRY` overrides
+the endpoint.
 
 ### CI
 
