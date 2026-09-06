@@ -147,14 +147,22 @@ the endpoint.
 
 ### CI
 
-`.github/workflows/check.yml` is the only definition of "checked": a per-system matrix running `nix flake check -L`
-and `nix run .#deepseek-harness -- --version`. It is both an ordinary `push`/`pull_request` workflow and a
-`workflow_call` reusable one, taking an optional `version` input that applies a pending bump before checking, and
-an optional `digest` pinning what that bump must produce.
+`.github/workflows/check.yml` is the only definition of "checked": a matrix over `x86_64-linux` and
+`aarch64-linux` running `nix flake check -L` and `nix run .#deepseek-harness -- --version`. It is both an ordinary
+`push`/`pull_request` workflow and a `workflow_call` reusable one, taking an optional `version` input that applies
+a pending bump before checking, and an optional `digest` pinning what that bump must produce.
 
 Each leg first asserts `builtins.currentSystem` equals its `matrix.system`. Without that the matrix is decorative:
 `nix flake check` only ever checks the host, so a runner label that silently changes architecture buys a row of
 green runs covering one system.
+
+`aarch64-darwin` is exported by the flake but **not** in the matrix, and that asymmetry is deliberate. The
+Linux-only parts of the build — `autoPatchelfHook`, `patchelfUnstable`, the addon probe, the web-boot probe — are
+exactly the parts a CI leg would exercise, so a macOS runner verifies little beyond `pnpm install` while adding
+the slowest, flakiest leg of the matrix. Darwin support is therefore evaluation-checked only
+(`nix eval .#packages.aarch64-darwin.deepseek-harness.drvPath`); a build regression there surfaces on a darwin
+host, not in CI. Do not "fix" the gap by re-adding a `macos-*` runner without also making the darwin build assert
+something Linux does not.
 
 `.github/workflows/update.yml` runs daily at 06:00 UTC in three jobs: `resolve` runs `update.sh` and reports
 whether the pin moved, `verify` calls `check.yml` with the new version, and `pull-request` opens or updates
@@ -186,7 +194,8 @@ native addon fails the addon probe; a profile that mounts and then dies fails th
 
 `nix flake check` covers the host system only. `--all-systems` tries to *build* the others and will fail
 off-platform; to check that the other systems still evaluate, use
-`nix eval .#packages.<system>.deepseek-harness.drvPath`.
+`nix eval .#packages.<system>.deepseek-harness.drvPath`. For `aarch64-darwin` that eval is the whole of CI's
+coverage, so run the build itself on a darwin host before claiming a bump works there.
 
 ## Gotchas
 
