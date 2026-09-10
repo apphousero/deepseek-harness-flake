@@ -12,7 +12,7 @@
 
 stdenv.mkDerivation (finalAttrs: {
   pname = "deepseek-harness";
-  version = "0.1.5-alpha.2";
+  version = "0.1.5-rc.1";
 
   src = ./npm;
 
@@ -20,7 +20,7 @@ stdenv.mkDerivation (finalAttrs: {
     inherit (finalAttrs) pname version src;
     pnpm = pnpm_11;
     fetcherVersion = 4;
-    hash = "sha256-Sps2BjqRd5N2Fop8Utc9pOdtVRUdWMCNCI21aEY0JA4=";
+    hash = "sha256-UZAwJzmATXJHjnF/mtL8YfQMjUmiyYbXHa5J/016MaA=";
   };
 
   nativeBuildInputs = [
