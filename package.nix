@@ -47,6 +47,12 @@ stdenv.mkDerivation (finalAttrs: {
     rm -f $out/lib/deepseek-harness/node_modules/.modules.yaml \
       $out/lib/deepseek-harness/node_modules/.pnpm-workspace-state-v1.json
 
+    substituteInPlace \
+      $out/lib/deepseek-harness/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js \
+      --replace-fail \
+      'const addon = createRequire(import.meta.url)("node-addon-require-builtin");' \
+      'const addon = ((req) => ({ requireBuiltin: (id) => { if (process.execArgv.includes("--expose-internals")) { try { return req(id); } catch {} } return req("node-addon-require-builtin").requireBuiltin(id); } }))(createRequire(import.meta.url));'
+
     makeWrapper ${lib.getExe nodejs} $out/bin/dsh \
       --add-flags --expose-internals \
       --add-flags $out/lib/deepseek-harness/node_modules/@deepseek-ai/dsh/lib/bin.js \
