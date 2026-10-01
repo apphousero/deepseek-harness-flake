@@ -106,6 +106,57 @@ profile that mounts and then dies: `--dump-default-config` never boots, and `--p
 app's own help before the loader reaches HMR. It is Linux-only: the probe has to bind a loopback socket, and the
 darwin build sandbox refuses that without `__darwinAllowLocalNetworking`, which nothing here can verify.
 
+## The one upstream patch: `internalModules()`
+
+`installPhase` rewrites a single line of `@deepseek-ai/dsh-app-boot/lib/index.js`:
+
+```js
+const addon = createRequire(import.meta.url)("node-addon-require-builtin");
+```
+
+becomes a shim whose `requireBuiltin(id)` returns `createRequire(import.meta.url)(id)` when `process.execArgv`
+contains `--expose-internals`, and only falls back to the addon otherwise. Without it `dsh` does not boot on
+**x86_64-linux** at any version from `0.1.6-alpha.2` on:
+
+```
+dsh: host preparation failed: node-addon-require-builtin unsupported: Unsupported/no-getter
+  (x64 sysv getter is not a recognized this->field accessor)
+```
+
+The cause is a compiler flag, not a bug in the flake, and not "Nix's V8 layout differs". `node-addon-require-builtin`
+resolves `node::PrincipalRealm::builtin_module_require()` in the host binary and *disassembles* it to recover a
+field offset. nixpkgs builds Node with `-fzero-call-used-regs=used-gpr` — the `zerocallusedregs` hardening flag,
+in `stdenv.cc.defaultHardeningFlags` on both Linux systems — which zeroes every used GPR that is not the return
+value. On SysV x86-64 `this` lives in `%rdi` and qualifies, so the getter is 10 bytes instead of the official
+build's 8:
+
+```
+48 8b 87 00 02 00 00   movq 0x200(%rdi), %rax
+31 ff                  xorl %edi, %edi          <- only in the nixpkgs build
+c3                     retq
+```
+
+`MatchX64SysVFieldGetter` expects the `ret` right after the load, so it gives up. `v8::Isolate::GetCurrentContext`
+gets the same epilogue, which kills the `has_v8_context` fallback too. `aarch64-linux` escapes it under the same
+flag because the AAPCS getter is `ldr x0, [x0, #0x200]` and `x0` is the return value, hence exempt from zeroing —
+which is why this looked architecture-specific and why only the `x86_64-linux` CI leg went red.
+
+Two things make the patch the right lever rather than rebuilding Node with `hardeningDisable`:
+
+- The internals are already reachable. The wrapper passes `--expose-internals` for HMR anyway, and
+  `cordis-plugin-loader`'s own `requireInternal()` (`src/internal.ts:108-118`) does exactly this check before
+  touching the addon. `dsh-app-boot` is the only consumer in the closure that calls `requireBuiltin` with neither
+  the `execArgv` check nor a `try`/`catch`, and since `0.1.6-alpha.2` `boot()` reaches it on every profile through
+  `createRuntimeResolution()` → `installRuntimeInterception()` → `internalModules()`. At `0.1.6-alpha.1` the
+  function existed but nothing called it, which is why master stayed green while every bump failed.
+- `nodejs.overrideAttrs { hardeningDisable = [ "zerocallusedregs" ]; }` is the alternative and it costs a full
+  Node source build, uncached, on every CI leg and every user build.
+
+`--replace-fail` is load-bearing: when upstream moves or rewrites that line the build fails loudly instead of
+silently shipping an unpatched tree that dies at boot on x86_64. If upstream restores a graceful fallback
+(tracked in [discussion 690](https://github.com/deepseek-ai/deepseek-harness/discussions/690)), delete the
+`substituteInPlace` — the web-boot probe in `installCheck` is what proves it is no longer needed.
+
 ## Updating to a new version
 
 ```sh
